@@ -7,14 +7,9 @@ export default ({ mode }: { mode: string }) =>
   defineConfig({
     base: './',
 
-    build: { target: 'esnext' },
+    plugins: [glsl()],
 
-    plugins: [
-      glsl({
-        compress: mode === 'production',
-        root: '/src/shaders/'
-      })
-    ],
+    build: { target: 'esnext' },
 
     resolve: {
       alias: { '@': resolve('src') },

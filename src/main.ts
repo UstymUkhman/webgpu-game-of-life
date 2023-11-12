@@ -1,13 +1,20 @@
-import './style.css';
+import Shader from '@/shader.wgsl';
 
-type GPUContextDevice = {
+type GPUContextDeviceFormat = {
   context: GPUCanvasContext,
+  format: GPUTextureFormat,
   device: GPUDevice
+};
+
+type GPUPipelineBufferVertices = {
+  pipeline: GPURenderPipeline,
+  buffer: GPUBuffer,
+  vertices: number
 };
 
 const WEBGPU_NOT_SUPPORTED = 404;
 
-async function initializeWebGPU (canvas: HTMLCanvasElement): Promise<GPUContextDevice> {
+async function initializeWebGPU(canvas: HTMLCanvasElement): Promise<GPUContextDeviceFormat> {
   const GPU = navigator.gpu;
 
   if (!GPU) throw new Error(
@@ -36,10 +43,88 @@ async function initializeWebGPU (canvas: HTMLCanvasElement): Promise<GPUContextD
   // https://gpuweb.github.io/gpuweb/#dom-gpucanvascontext-configure
   context.configure({ device, format });
 
-  return { context, device };
+  return { context, device, format };
 }
 
-function createRenderPass ({ context, device }: GPUContextDevice): void {
+function createRenderPipeline(device: GPUDevice, format: GPUTextureFormat): GPUPipelineBufferVertices {
+  const vertices = new Float32Array([
+  //  X     Y
+    -0.8,  0.8, // Top Left          0______________1, 5
+     0.8,  0.8, // Top Right         |            ||
+    -0.8, -0.8, // Bottom Left       |         |   |
+    -0.8, -0.8, // Bottom Left       |      |      |
+     0.8, -0.8, // Bottom Right      |   |         |
+     0.8,  0.8  // Top Right     2, 3||____________|4
+  ]);
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
+  const vertexBuffer = device.createBuffer({
+    // https://gpuweb.github.io/gpuweb/#typedefdef-gpubufferusageflags
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    size: vertices.byteLength,
+    label: 'Cell Vertices'
+  });
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
+  device.queue.writeBuffer(vertexBuffer, 0, vertices);
+
+  // https://gpuweb.github.io/gpuweb/#dictdef-gpuvertexbufferlayout
+  const vertexBufferLayout = {
+    // Number of bytes the GPU needs to skip forward in
+    // the buffer when it's looking for the next vertex.
+    // Each vertex is made up of two 32-bit float numbers,
+    // a 32-bit float is 4 bytes, so two floats is 8 bytes.
+    arrayStride: 8,
+    attributes: [
+      // Vertex Position:
+      {
+        // https://gpuweb.github.io/gpuweb/#enumdef-gpuvertexformat
+        format: 'float32x2' as GPUVertexFormat,
+        // Arbitrary number between 0 and 15, must be unique for every defined attribute.
+        // https://gpuweb.github.io/gpuweb/#dom-gpuvertexattribute-shaderlocation
+        shaderLocation: 0,
+        // https://gpuweb.github.io/gpuweb/#dom-gpuvertexattribute-offset
+        offset: 0
+      }
+    ]
+  };
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createshadermodule
+  const cellShaderModule = device.createShaderModule({
+    label: 'Cell Shader',
+    code: Shader
+  });
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createrenderpipeline
+  const cellPipeline = device.createRenderPipeline({
+    label: 'Cell Pipeline',
+    layout: 'auto',
+
+    vertex: {
+      buffers: [vertexBufferLayout],
+      module: cellShaderModule,
+      entryPoint: 'mainVert'
+    },
+
+    fragment: {
+      module: cellShaderModule,
+      entryPoint: 'mainFrag',
+      targets: [{ format }]
+    }
+  });
+
+  return {
+    vertices: vertices.length / 2,
+    pipeline: cellPipeline,
+    buffer: vertexBuffer
+  };
+}
+
+function createRenderPass(
+  { pipeline, buffer, vertices }: GPUPipelineBufferVertices,
+  context: GPUCanvasContext,
+  device: GPUDevice
+): void {
   // https://gpuweb.github.io/gpuweb/#gpucommandencoder
   const commandEncoder = device.createCommandEncoder();
 
@@ -58,6 +143,15 @@ function createRenderPass ({ context, device }: GPUContextDevice): void {
     }]
   });
 
+  // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-setvertexbuffer
+  renderPass.setVertexBuffer(0, buffer);
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-setpipeline
+  renderPass.setPipeline(pipeline);
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-draw
+  renderPass.draw(vertices);
+
   // https://gpuweb.github.io/gpuweb/#dom-gpurenderpassencoder-end
   renderPass.end();
 
@@ -69,7 +163,9 @@ function createRenderPass ({ context, device }: GPUContextDevice): void {
 }
 
 initializeWebGPU(document.getElementsByTagName('canvas')[0])
-  .then(createRenderPass)
+  .then(({ context, device, format }: GPUContextDeviceFormat) =>
+    createRenderPass(createRenderPipeline(device, format), context, device)
+  )
   .catch(error =>
     error.cause === WEBGPU_NOT_SUPPORTED
       ? alert(error.message)
