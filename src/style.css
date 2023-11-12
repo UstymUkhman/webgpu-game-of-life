@@ -1,0 +1,55 @@
+*,
+*::after,
+*::before {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  -webkit-text-rendering: optimizeLegibility;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-family: monospace, sans-serif;
+  -webkit-overflow-scrolling: touch;
+
+  font-variant-ligatures: none;
+  overscroll-behavior: contain;
+  -webkit-touch-callout: none;
+  backface-visibility: hidden;
+
+  background-color: #282828;
+  -webkit-user-select: none;
+  text-size-adjust: none;
+  letter-spacing: normal;
+
+  line-height: normal;
+  font-weight: normal;
+  font-kerning: none;
+  font-style: normal;
+
+  user-select: none;
+  appearance: none;
+  overflow: hidden;
+
+  max-height: 100%;
+  min-height: 100%;
+
+  max-width: 100%;
+  min-width: 100%;
+
+  font-size: 16px;
+  color: #c7c7c7;
+
+  height: 100%;
+  width: 100%;
+
+  padding: 0;
+  margin: 0;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+}

@@ -1,0 +1,45 @@
+{
+  "name": "webgpu-game-of-life",
+  "homepage": "https://github.com/UstymUkhman/webgpu-game-of-life#readme",
+  "description": "Conway's Game of Life in WebGPU.",
+  "packageManager": "^npm@9.8.0",
+  "main": "src/main.ts",
+  "version": "0.0.0",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/UstymUkhman/webgpu-game-of-life.git"
+  },
+  "bugs": {
+    "url": "https://github.com/UstymUkhman/webgpu-game-of-life/issues",
+    "email": "ustym.ukhman@gmail.com"
+  },
+  "author": {
+    "name": "Ustym Ukhman",
+    "email": "ustym.ukhman@gmail.com",
+    "url": "https://github.com/UstymUkhman/"
+  },
+  "keywords": [
+    "conway",
+    "webgpu",
+    "game-of-life"
+  ],
+  "scripts": {
+    "start": "vite",
+    "serve": "vite preview",
+    "build": "tsc && vite build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.9.0",
+    "@webgpu/types": "^0.1.38",
+    "typescript": "^5.2.2",
+    "vite": "^4.4.5",
+    "vite-plugin-glsl": "^1.1.2"
+  },
+  "engines": {
+    "node": ">= 18.12.1",
+    "pnpm": ">= 8.10.2"
+  }
+}
