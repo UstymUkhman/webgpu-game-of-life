@@ -1,4 +1,4 @@
-import Shader from '@/shader.wgsl';
+import Renderer from '@/renderer.wgsl';
 
 type GPUContextDeviceFormat = {
   context: GPUCanvasContext,
@@ -13,6 +13,7 @@ type GPUPipelineBufferVertices = {
 };
 
 const WEBGPU_NOT_SUPPORTED = 404;
+const RENDER_LOOP_INTERVAL = 200;
 
 async function initializeWebGPU(
   canvas: HTMLCanvasElement
@@ -96,8 +97,8 @@ function createRenderPipeline(
 
   // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createshadermodule
   const cellShaderModule = device.createShaderModule({
-    label: 'Cell Shader',
-    code: Shader
+    label: 'Cell Renderer',
+    code: Renderer
   });
 
   // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createrenderpipeline
@@ -131,7 +132,7 @@ function createGridBindGroup(
   pipeline: GPURenderPipeline,
   device: GPUDevice,
   size: number
-) {
+): GPUBindGroup[] {
   // Uniform buffer array for the grid size.
   const uniformArray = new Float32Array([size, size]);
 
@@ -145,29 +146,86 @@ function createGridBindGroup(
   // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
   device.queue.writeBuffer(uniformBuffer, 0, uniformArray);
 
-  // A bind group is a collection of resources that need to be accessible to a shader at the same time.
-  // It can include several types of buffers, like a uniform buffer, textures and samplers.
-  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbindgroup
-  return device.createBindGroup({
-    // `layout: 'auto'` causes the pipeline to create bind group layouts
-    // automatically from the bindings declared in the shader code.
-    // Index of `0` corresponds to the `@group(0)` in the shader.
-    // https://gpuweb.github.io/gpuweb/#dom-gpupipelinebase-getbindgrouplayout
-    layout: pipeline.getBindGroupLayout(0),
-    label: 'Cell renderer bind group',
-    entries: [{
-      binding: 0,
-      resource: {
-        buffer: uniformBuffer
-      }
-    }]
-  });
+  // Storage buffer array for the active state of each cell.
+  const storageArray = new Uint32Array(size * size);
+
+  // Two storage buffers hold cells states using ping pong pattern.
+  const storageBuffers = [
+    // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
+    device.createBuffer({
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      size: storageArray.byteLength,
+      label: 'Cell State A'
+    }),
+    // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
+    device.createBuffer({
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      size: storageArray.byteLength,
+      label: 'Cell State B'
+    })
+  ];
+
+  // Every third cell of the first grid is marked as active.
+  for (let i = 0; i < storageArray.length; i += 3) storageArray[i] = 1;
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
+  device.queue.writeBuffer(storageBuffers[0], 0, storageArray);
+
+  // Every other cell of the second grid is marked as active.
+  for (let i = 0; i < storageArray.length; i++) storageArray[i] = i % 2;
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
+  device.queue.writeBuffer(storageBuffers[1], 0, storageArray);
+
+  // Two bind groups are created, one for each storage buffer.
+  return [
+    // A bind group is a collection of resources that need to be accessible to a shader at the same time.
+    // It can include several types of buffers, like a uniform buffer, textures and samplers.
+    // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbindgroup
+    device.createBindGroup({
+      // `layout: 'auto'` causes the pipeline to create bind group layouts
+      // automatically from the bindings declared in the shader code.
+      // Index of `0` corresponds to the `@group(0)` in the shader.
+      // https://gpuweb.github.io/gpuweb/#dom-gpupipelinebase-getbindgrouplayout
+      layout: pipeline.getBindGroupLayout(0),
+      label: 'Cell renderer bind group A',
+      entries: [{
+        binding: 0,
+        resource: {
+          buffer: uniformBuffer
+        }
+      }, {
+        binding: 1,
+        resource: {
+          buffer: storageBuffers[0]
+        }
+      }]
+    }),
+
+    device.createBindGroup({
+      // https://gpuweb.github.io/gpuweb/#dom-gpupipelinebase-getbindgrouplayout
+      layout: pipeline.getBindGroupLayout(0),
+      label: 'Cell renderer bind group B',
+      entries: [{
+        binding: 0,
+        resource: {
+          buffer: uniformBuffer
+        }
+      }, {
+        binding: 1,
+        resource: {
+          buffer: storageBuffers[1]
+        }
+      }]
+    })
+  ];
 }
 
 function createRenderPass(
   pipeline: GPURenderPipeline,
   context: GPUCanvasContext,
-  group: GPUBindGroup,
+  groups: GPUBindGroup[],
+  activeGroup: number,
   device: GPUDevice,
   buffer: GPUBuffer,
   instances: number,
@@ -191,14 +249,14 @@ function createRenderPass(
     }]
   });
 
+  // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-setpipeline
+  renderPass.setPipeline(pipeline);
+
   // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-setvertexbuffer
   renderPass.setVertexBuffer(0, buffer);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpubindingcommandsmixin-setbindgroup
-  renderPass.setBindGroup(0, group);
-
-  // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-setpipeline
-  renderPass.setPipeline(pipeline);
+  renderPass.setBindGroup(0, groups[activeGroup]);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-draw
   renderPass.draw(vertices, instances);
@@ -214,21 +272,25 @@ function createRenderPass(
 }
 
 initializeWebGPU(document.getElementsByTagName('canvas')[0])
-  .then(({ context, device, format }: GPUContextDeviceFormat, size = 32) => {
+  .then(({ context, device, format }: GPUContextDeviceFormat, size = 32, step = 0) => {
     const { pipeline, buffer, vertices } = createRenderPipeline(device, format);
 
-    createRenderPass(
-      pipeline,
-      context,
-      createGridBindGroup(
+    setInterval(() =>
+      createRenderPass(
         pipeline,
+        context,
+        createGridBindGroup(
+          pipeline,
+          device,
+          size
+        ),
+        step++ % 2,
         device,
-        size
+        buffer,
+        size * size,
+        vertices
       ),
-      device,
-      buffer,
-      size * size,
-      vertices
+      RENDER_LOOP_INTERVAL
     );
   })
   .catch(error =>
