@@ -130,7 +130,7 @@ function createRenderPipeline(
 function createGridBindGroup(
   pipeline: GPURenderPipeline,
   device: GPUDevice,
-  size = 4
+  size: number
 ) {
   // Uniform buffer array for the grid size.
   const uniformArray = new Float32Array([size, size]);
@@ -167,10 +167,11 @@ function createGridBindGroup(
 function createRenderPass(
   pipeline: GPURenderPipeline,
   context: GPUCanvasContext,
-  bindGroup: GPUBindGroup,
+  group: GPUBindGroup,
   device: GPUDevice,
   buffer: GPUBuffer,
-  vertices: number
+  instances: number,
+  vertices: number,
 ): void {
   // https://gpuweb.github.io/gpuweb/#gpucommandencoder
   const commandEncoder = device.createCommandEncoder();
@@ -194,13 +195,13 @@ function createRenderPass(
   renderPass.setVertexBuffer(0, buffer);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpubindingcommandsmixin-setbindgroup
-  renderPass.setBindGroup(0, bindGroup);
+  renderPass.setBindGroup(0, group);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-setpipeline
   renderPass.setPipeline(pipeline);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-draw
-  renderPass.draw(vertices);
+  renderPass.draw(vertices, instances);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpurenderpassencoder-end
   renderPass.end();
@@ -213,15 +214,20 @@ function createRenderPass(
 }
 
 initializeWebGPU(document.getElementsByTagName('canvas')[0])
-  .then(({ context, device, format }: GPUContextDeviceFormat) => {
+  .then(({ context, device, format }: GPUContextDeviceFormat, size = 32) => {
     const { pipeline, buffer, vertices } = createRenderPipeline(device, format);
 
     createRenderPass(
       pipeline,
       context,
-      createGridBindGroup(pipeline, device),
+      createGridBindGroup(
+        pipeline,
+        device,
+        size
+      ),
       device,
       buffer,
+      size * size,
       vertices
     );
   })
