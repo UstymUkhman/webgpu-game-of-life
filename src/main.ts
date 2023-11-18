@@ -14,7 +14,9 @@ type GPUPipelineBufferVertices = {
 
 const WEBGPU_NOT_SUPPORTED = 404;
 
-async function initializeWebGPU(canvas: HTMLCanvasElement): Promise<GPUContextDeviceFormat> {
+async function initializeWebGPU(
+  canvas: HTMLCanvasElement
+): Promise<GPUContextDeviceFormat> {
   const GPU = navigator.gpu;
 
   if (!GPU) throw new Error(
@@ -46,15 +48,18 @@ async function initializeWebGPU(canvas: HTMLCanvasElement): Promise<GPUContextDe
   return { context, device, format };
 }
 
-function createRenderPipeline(device: GPUDevice, format: GPUTextureFormat): GPUPipelineBufferVertices {
+function createRenderPipeline(
+  device: GPUDevice,
+  format: GPUTextureFormat
+): GPUPipelineBufferVertices {
   const vertices = new Float32Array([
   //  X     Y
     -0.8,  0.8, // Top Left          0______________1, 5
-     0.8,  0.8, // Top Right         |            ||
-    -0.8, -0.8, // Bottom Left       |         |   |
-    -0.8, -0.8, // Bottom Left       |      |      |
-     0.8, -0.8, // Bottom Right      |   |         |
-     0.8,  0.8  // Top Right     2, 3||____________|4
+     0.8,  0.8, // Top Right         |            /|
+    -0.8, -0.8, // Bottom Left       |         /   |
+    -0.8, -0.8, // Bottom Left       |      /      |
+     0.8, -0.8, // Bottom Right      |   /         |
+     0.8,  0.8  // Top Right     2, 3|/____________|4
   ]);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
@@ -100,12 +105,14 @@ function createRenderPipeline(device: GPUDevice, format: GPUTextureFormat): GPUP
     label: 'Cell Pipeline',
     layout: 'auto',
 
+    // Vertex Stage:
     vertex: {
       buffers: [vertexBufferLayout],
       module: cellShaderModule,
       entryPoint: 'mainVert'
     },
 
+    // Fragment Stage:
     fragment: {
       module: cellShaderModule,
       entryPoint: 'mainFrag',
@@ -120,10 +127,50 @@ function createRenderPipeline(device: GPUDevice, format: GPUTextureFormat): GPUP
   };
 }
 
+function createGridBindGroup(
+  pipeline: GPURenderPipeline,
+  device: GPUDevice,
+  size = 4
+) {
+  // Uniform buffer array for the grid size.
+  const uniformArray = new Float32Array([size, size]);
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
+  const uniformBuffer = device.createBuffer({
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    size: uniformArray.byteLength,
+    label: 'Grid Uniforms'
+  });
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
+  device.queue.writeBuffer(uniformBuffer, 0, uniformArray);
+
+  // A bind group is a collection of resources that need to be accessible to a shader at the same time.
+  // It can include several types of buffers, like a uniform buffer, textures and samplers.
+  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbindgroup
+  return device.createBindGroup({
+    // `layout: 'auto'` causes the pipeline to create bind group layouts
+    // automatically from the bindings declared in the shader code.
+    // Index of `0` corresponds to the `@group(0)` in the shader.
+    // https://gpuweb.github.io/gpuweb/#dom-gpupipelinebase-getbindgrouplayout
+    layout: pipeline.getBindGroupLayout(0),
+    label: 'Cell renderer bind group',
+    entries: [{
+      binding: 0,
+      resource: {
+        buffer: uniformBuffer
+      }
+    }]
+  });
+}
+
 function createRenderPass(
-  { pipeline, buffer, vertices }: GPUPipelineBufferVertices,
+  pipeline: GPURenderPipeline,
   context: GPUCanvasContext,
-  device: GPUDevice
+  bindGroup: GPUBindGroup,
+  device: GPUDevice,
+  buffer: GPUBuffer,
+  vertices: number
 ): void {
   // https://gpuweb.github.io/gpuweb/#gpucommandencoder
   const commandEncoder = device.createCommandEncoder();
@@ -146,6 +193,9 @@ function createRenderPass(
   // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-setvertexbuffer
   renderPass.setVertexBuffer(0, buffer);
 
+  // https://gpuweb.github.io/gpuweb/#dom-gpubindingcommandsmixin-setbindgroup
+  renderPass.setBindGroup(0, bindGroup);
+
   // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-setpipeline
   renderPass.setPipeline(pipeline);
 
@@ -163,9 +213,18 @@ function createRenderPass(
 }
 
 initializeWebGPU(document.getElementsByTagName('canvas')[0])
-  .then(({ context, device, format }: GPUContextDeviceFormat) =>
-    createRenderPass(createRenderPipeline(device, format), context, device)
-  )
+  .then(({ context, device, format }: GPUContextDeviceFormat) => {
+    const { pipeline, buffer, vertices } = createRenderPipeline(device, format);
+
+    createRenderPass(
+      pipeline,
+      context,
+      createGridBindGroup(pipeline, device),
+      device,
+      buffer,
+      vertices
+    );
+  })
   .catch(error =>
     error.cause === WEBGPU_NOT_SUPPORTED
       ? alert(error.message)
