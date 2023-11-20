@@ -1,4 +1,5 @@
 import Renderer from '@/renderer.wgsl';
+import Simulation from '@/simulation.wgsl';
 
 type GPUContextDeviceFormat = {
   context: GPUCanvasContext,
@@ -6,8 +7,14 @@ type GPUContextDeviceFormat = {
   device: GPUDevice
 };
 
-type GPUPipelineBufferVertices = {
+type GPUBindGroupsLayout = {
+  layout: GPUBindGroupLayout,
+  groups: GPUBindGroup[]
+};
+
+type GPUPipelineLayoutBufferVertices = {
   pipeline: GPURenderPipeline,
+  layout: GPUPipelineLayout,
   buffer: GPUBuffer,
   vertices: number
 };
@@ -49,10 +56,190 @@ async function initializeWebGPU(
   return { context, device, format };
 }
 
+function createComputePipeline(
+  layout: GPUPipelineLayout,
+  device: GPUDevice,
+  workgroupSize = 8
+): void {
+  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createshadermodule
+  const simulationShaderModule = device.createShaderModule({
+    label: 'Game Simulation',
+    code: Simulation
+  });
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createcomputepipeline
+  const simulationPipeline = device.createComputePipeline({
+    label: 'Simulation Pipeline',
+    /**
+     * `layout: 'auto'` causes the pipeline to create bind group layouts
+     * automatically from the bindings declared in the shader code.
+     * https://gpuweb.github.io/gpuweb/#dom-gpupipelinedescriptorbase-layout
+     * 
+     * layout: 'auto',
+     */
+
+    // Explicit pipeline layout with custom bind group layout instead of the automatically
+    // created one from the bindings declared in the shader code to allow render and
+    // compute shaders to share resources that are present in the same bind group.
+    layout,
+
+    compute: {
+      module: simulationShaderModule,
+      entryPoint: 'mainCompute'
+    }
+  });
+}
+
+function createGridBindGroups(
+  // pipeline: GPURenderPipeline,
+  device: GPUDevice,
+  size: number
+): GPUBindGroupsLayout {
+  // Uniform buffer array for the grid size.
+  const uniformArray = new Float32Array([size, size]);
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
+  const uniformBuffer = device.createBuffer({
+    label: 'Grid Uniforms',
+    size: uniformArray.byteLength,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+  });
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
+  device.queue.writeBuffer(uniformBuffer, 0, uniformArray);
+
+  // Storage buffer array for the active state of each cell.
+  const storageArray = new Uint32Array(size * size);
+
+  // Two storage buffers hold cells states using ping pong pattern.
+  const storageBuffers = [
+    // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
+    device.createBuffer({
+      label: 'Cell State A',
+      size: storageArray.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+    }),
+    // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
+    device.createBuffer({
+      label: 'Cell State B',
+      size: storageArray.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+    })
+  ];
+
+  // Every third cell of the first grid is marked as active.
+  for (let i = 0; i < storageArray.length; i += 3) storageArray[i] = 1;
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
+  device.queue.writeBuffer(storageBuffers[0], 0, storageArray);
+
+  // Every other cell of the second grid is marked as active.
+  for (let i = 0; i < storageArray.length; i++) storageArray[i] = i % 2;
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
+  device.queue.writeBuffer(storageBuffers[1], 0, storageArray);
+
+  // Bind group layout and pipeline layout that describes all
+  // of the resources that are present in the bind group,
+  // not just the ones used by a specific pipeline.
+  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbindgrouplayout
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: 'Cell Bind Group Layout',
+    entries: [{
+      binding: 0,
+      // Grid uniform buffer.
+      // `type: 'uniform'` is optional,
+      // but buffer value has to be
+      // at least an empty object.
+      buffer: { type: 'uniform' },
+      // https://gpuweb.github.io/gpuweb/#typedefdef-gpushaderstageflags
+      visibility: GPUShaderStage.VERTEX /* | GPUShaderStage.FRAGMENT */ | GPUShaderStage.COMPUTE
+    }, {
+      binding: 1,
+      // Cell input state buffer.
+      buffer: { type: 'read-only-storage' },
+      visibility: GPUShaderStage.VERTEX | GPUShaderStage.COMPUTE
+    }, {
+      binding: 2,
+      // Cell output state buffer.
+      buffer: { type: 'storage' },
+      visibility: GPUShaderStage.COMPUTE
+    }]
+  });
+
+  // Two bind groups are created, one for each storage buffer.
+  const bindGroups = [
+    // A bind group is a collection of resources that need to be accessible to a shader at the same time.
+    // It can include several types of buffers, like a uniform buffer, textures and samplers.
+    // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbindgroup
+    device.createBindGroup({
+      label: 'Cell renderer bind group A',
+      /**
+       * `layout: 'auto'` causes the pipeline to create bind group layouts
+       * automatically from the bindings declared in the shader code.
+       * Index of `0` corresponds to the `@group(0)` in the shader.
+       * https://gpuweb.github.io/gpuweb/#dom-gpupipelinebase-getbindgrouplayout
+       * 
+       * layout: pipeline.getBindGroupLayout(0),
+       */
+
+      // Custom bind group layout instead of the automatically created one from
+      // the bindings declared in the shader code to allow render and compute
+      // shaders to share resources that are present in the same bind group.
+      layout: bindGroupLayout,
+      entries: [{
+        binding: 0,
+        resource: {
+          buffer: uniformBuffer
+        }
+      }, {
+        binding: 1,
+        resource: {
+          buffer: storageBuffers[0]
+        }
+      }, {
+        binding: 2,
+        resource: {
+          buffer: storageBuffers[1]
+        }
+      }]
+    }),
+
+    device.createBindGroup({
+      label: 'Cell renderer bind group B',
+      // https://gpuweb.github.io/gpuweb/#dom-gpupipelinebase-getbindgrouplayout
+      // layout: pipeline.getBindGroupLayout(0),
+      layout: bindGroupLayout,
+      entries: [{
+        binding: 0,
+        resource: {
+          buffer: uniformBuffer
+        }
+      }, {
+        binding: 1,
+        resource: {
+          buffer: storageBuffers[1]
+        }
+      }, {
+        binding: 2,
+        resource: {
+          buffer: storageBuffers[0]
+        }
+      }]
+    })
+  ];
+
+  return {
+    layout: bindGroupLayout,
+    groups: bindGroups
+  };
+}
+
 function createRenderPipeline(
   device: GPUDevice,
-  format: GPUTextureFormat
-): GPUPipelineBufferVertices {
+  format: GPUTextureFormat,
+  layout: GPUBindGroupLayout
+): GPUPipelineLayoutBufferVertices {
   const vertices = new Float32Array([
   //  X     Y
     -0.8,  0.8, // Top Left          0______________1, 5
@@ -65,14 +252,24 @@ function createRenderPipeline(
 
   // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
   const vertexBuffer = device.createBuffer({
-    // https://gpuweb.github.io/gpuweb/#typedefdef-gpubufferusageflags
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    label: 'Cell Vertices',
     size: vertices.byteLength,
-    label: 'Cell Vertices'
+    // https://gpuweb.github.io/gpuweb/#typedefdef-gpubufferusageflags
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
   });
 
   // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
   device.queue.writeBuffer(vertexBuffer, 0, vertices);
+
+  // A list of bind group layouts that one or more pipelines can use.
+  // The order of the bind group layouts in the array needs to
+  // correspond with the `@group` attributes in the shaders.
+  // In this case, `layout` is associated with `@group(0)`.
+  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createpipelinelayout
+  const pipelineLayout = device.createPipelineLayout({
+    label: 'Cell Pipeline Layout',
+    bindGroupLayouts: [layout],
+  });
 
   // https://gpuweb.github.io/gpuweb/#dictdef-gpuvertexbufferlayout
   const vertexBufferLayout = {
@@ -104,7 +301,18 @@ function createRenderPipeline(
   // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createrenderpipeline
   const cellPipeline = device.createRenderPipeline({
     label: 'Cell Pipeline',
-    layout: 'auto',
+    /**
+     * `layout: 'auto'` causes the pipeline to create bind group layouts
+     * automatically from the bindings declared in the shader code.
+     * https://gpuweb.github.io/gpuweb/#dom-gpupipelinedescriptorbase-layout
+     * 
+     * layout: 'auto',
+     */
+
+    // Explicit pipeline layout with custom bind group layout instead of the automatically
+    // created one from the bindings declared in the shader code to allow render and
+    // compute shaders to share resources that are present in the same bind group.
+    layout: pipelineLayout,
 
     // Vertex Stage:
     vertex: {
@@ -124,115 +332,29 @@ function createRenderPipeline(
   return {
     vertices: vertices.length / 2,
     pipeline: cellPipeline,
+    layout: pipelineLayout,
     buffer: vertexBuffer
   };
-}
-
-function createGridBindGroup(
-  pipeline: GPURenderPipeline,
-  device: GPUDevice,
-  size: number
-): GPUBindGroup[] {
-  // Uniform buffer array for the grid size.
-  const uniformArray = new Float32Array([size, size]);
-
-  // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
-  const uniformBuffer = device.createBuffer({
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    size: uniformArray.byteLength,
-    label: 'Grid Uniforms'
-  });
-
-  // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
-  device.queue.writeBuffer(uniformBuffer, 0, uniformArray);
-
-  // Storage buffer array for the active state of each cell.
-  const storageArray = new Uint32Array(size * size);
-
-  // Two storage buffers hold cells states using ping pong pattern.
-  const storageBuffers = [
-    // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
-    device.createBuffer({
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      size: storageArray.byteLength,
-      label: 'Cell State A'
-    }),
-    // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer
-    device.createBuffer({
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      size: storageArray.byteLength,
-      label: 'Cell State B'
-    })
-  ];
-
-  // Every third cell of the first grid is marked as active.
-  for (let i = 0; i < storageArray.length; i += 3) storageArray[i] = 1;
-
-  // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
-  device.queue.writeBuffer(storageBuffers[0], 0, storageArray);
-
-  // Every other cell of the second grid is marked as active.
-  for (let i = 0; i < storageArray.length; i++) storageArray[i] = i % 2;
-
-  // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
-  device.queue.writeBuffer(storageBuffers[1], 0, storageArray);
-
-  // Two bind groups are created, one for each storage buffer.
-  return [
-    // A bind group is a collection of resources that need to be accessible to a shader at the same time.
-    // It can include several types of buffers, like a uniform buffer, textures and samplers.
-    // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbindgroup
-    device.createBindGroup({
-      // `layout: 'auto'` causes the pipeline to create bind group layouts
-      // automatically from the bindings declared in the shader code.
-      // Index of `0` corresponds to the `@group(0)` in the shader.
-      // https://gpuweb.github.io/gpuweb/#dom-gpupipelinebase-getbindgrouplayout
-      layout: pipeline.getBindGroupLayout(0),
-      label: 'Cell renderer bind group A',
-      entries: [{
-        binding: 0,
-        resource: {
-          buffer: uniformBuffer
-        }
-      }, {
-        binding: 1,
-        resource: {
-          buffer: storageBuffers[0]
-        }
-      }]
-    }),
-
-    device.createBindGroup({
-      // https://gpuweb.github.io/gpuweb/#dom-gpupipelinebase-getbindgrouplayout
-      layout: pipeline.getBindGroupLayout(0),
-      label: 'Cell renderer bind group B',
-      entries: [{
-        binding: 0,
-        resource: {
-          buffer: uniformBuffer
-        }
-      }, {
-        binding: 1,
-        resource: {
-          buffer: storageBuffers[1]
-        }
-      }]
-    })
-  ];
 }
 
 function createRenderPass(
   pipeline: GPURenderPipeline,
   context: GPUCanvasContext,
   groups: GPUBindGroup[],
-  activeGroup: number,
   device: GPUDevice,
   buffer: GPUBuffer,
   instances: number,
   vertices: number,
-): void {
+  step: number
+): number {
   // https://gpuweb.github.io/gpuweb/#gpucommandencoder
   const commandEncoder = device.createCommandEncoder();
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpucommandencoder-begincomputepass
+  const computePass = commandEncoder.beginComputePass();
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpucomputepassencoder-end
+  computePass.end();
 
   // https://gpuweb.github.io/gpuweb/#dom-gpucommandencoder-beginrenderpass
   const renderPass = commandEncoder.beginRenderPass({
@@ -256,7 +378,7 @@ function createRenderPass(
   renderPass.setVertexBuffer(0, buffer);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpubindingcommandsmixin-setbindgroup
-  renderPass.setBindGroup(0, groups[activeGroup]);
+  renderPass.setBindGroup(0, groups[step++ % 2]);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-draw
   renderPass.draw(vertices, instances);
@@ -269,29 +391,32 @@ function createRenderPass(
   // https://gpuweb.github.io/gpuweb/#dom-gpucommandencoder-finish
   // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-submit
   device.queue.submit([commandEncoder.finish()]);
+
+  return step;
 }
 
 initializeWebGPU(document.getElementsByTagName('canvas')[0])
   .then(({ context, device, format }: GPUContextDeviceFormat, size = 32, step = 0) => {
-    const { pipeline, buffer, vertices } = createRenderPipeline(device, format);
+    const { layout: bindGroupLayout, groups } =
+      createGridBindGroups(/* pipeline, */ device, size);
 
-    setInterval(() =>
-      createRenderPass(
+    const { pipeline, layout, buffer, vertices } =
+      createRenderPipeline(device, format, bindGroupLayout);
+
+    createComputePipeline(layout, device);
+
+    setInterval(() => {
+      step = createRenderPass(
         pipeline,
         context,
-        createGridBindGroup(
-          pipeline,
-          device,
-          size
-        ),
-        step++ % 2,
+        groups,
         device,
         buffer,
         size * size,
-        vertices
-      ),
-      RENDER_LOOP_INTERVAL
-    );
+        vertices,
+        step
+      )
+    }, RENDER_LOOP_INTERVAL);
   })
   .catch(error =>
     error.cause === WEBGPU_NOT_SUPPORTED
