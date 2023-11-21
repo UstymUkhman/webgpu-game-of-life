@@ -17,13 +17,9 @@ fn mainCompute(
   // of the current call from the grid of shader invocations.
   @builtin(global_invocation_id) cell: vec3u
 ) {
-  if (cellStateIn[cellIndex(cell.xy)] == 1) {
-    cellStateOut[cellIndex(cell.xy)] = 0;
-  } else {
-    cellStateOut[cellIndex(cell.xy)] = 1;
-  }
-
-  // cellStateIn[cellIndex(cell.xy)] == 1
-  //   ? cellStateOut[cellIndex(cell.xy)] = 0
-  //   : cellStateOut[cellIndex(cell.xy)] = 1;
+  // WGSL Ternary Operator.
+  // https://www.w3.org/TR/WGSL/#select-builtin
+  cellStateOut[cellIndex(cell.xy)] = select(
+    1u, 0u, cellStateIn[cellIndex(cell.xy)] == 1
+  );
 }

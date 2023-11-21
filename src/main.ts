@@ -1,6 +1,13 @@
 import Renderer from '@/renderer.wgsl';
 import Simulation from '@/simulation.wgsl';
 
+type GPUPipelineLayoutBufferVertices = {
+  pipeline: GPURenderPipeline,
+  layout: GPUPipelineLayout,
+  buffer: GPUBuffer,
+  vertices: number
+};
+
 type GPUContextDeviceFormat = {
   context: GPUCanvasContext,
   format: GPUTextureFormat,
@@ -12,15 +19,8 @@ type GPUBindGroupsLayout = {
   groups: GPUBindGroup[]
 };
 
-type GPUPipelineLayoutBufferVertices = {
-  pipeline: GPURenderPipeline,
-  layout: GPUPipelineLayout,
-  buffer: GPUBuffer,
-  vertices: number
-};
-
 const WEBGPU_NOT_SUPPORTED = 404;
-const RENDER_LOOP_INTERVAL = 200;
+const RENDER_LOOP_INTERVAL = 250;
 
 async function initializeWebGPU(
   canvas: HTMLCanvasElement
@@ -58,17 +58,16 @@ async function initializeWebGPU(
 
 function createComputePipeline(
   layout: GPUPipelineLayout,
-  device: GPUDevice,
-  workgroupSize = 8
-): void {
+  device: GPUDevice
+): GPUComputePipeline {
   // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createshadermodule
   const simulationShaderModule = device.createShaderModule({
-    label: 'Game Simulation',
+    label: 'Simulation Shader',
     code: Simulation
   });
 
   // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createcomputepipeline
-  const simulationPipeline = device.createComputePipeline({
+  return device.createComputePipeline({
     label: 'Simulation Pipeline',
     /**
      * `layout: 'auto'` causes the pipeline to create bind group layouts
@@ -153,12 +152,12 @@ function createGridBindGroups(
       // at least an empty object.
       buffer: { type: 'uniform' },
       // https://gpuweb.github.io/gpuweb/#typedefdef-gpushaderstageflags
-      visibility: GPUShaderStage.VERTEX /* | GPUShaderStage.FRAGMENT */ | GPUShaderStage.COMPUTE
+      visibility: GPUShaderStage.COMPUTE | GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT
     }, {
       binding: 1,
       // Cell input state buffer.
       buffer: { type: 'read-only-storage' },
-      visibility: GPUShaderStage.VERTEX | GPUShaderStage.COMPUTE
+      visibility: GPUShaderStage.COMPUTE | GPUShaderStage.VERTEX
     }, {
       binding: 2,
       // Cell output state buffer.
@@ -173,7 +172,7 @@ function createGridBindGroups(
     // It can include several types of buffers, like a uniform buffer, textures and samplers.
     // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbindgroup
     device.createBindGroup({
-      label: 'Cell renderer bind group A',
+      label: 'Cell Bind Group A',
       /**
        * `layout: 'auto'` causes the pipeline to create bind group layouts
        * automatically from the bindings declared in the shader code.
@@ -206,7 +205,7 @@ function createGridBindGroups(
     }),
 
     device.createBindGroup({
-      label: 'Cell renderer bind group B',
+      label: 'Cell Bind Group B',
       // https://gpuweb.github.io/gpuweb/#dom-gpupipelinebase-getbindgrouplayout
       // layout: pipeline.getBindGroupLayout(0),
       layout: bindGroupLayout,
@@ -294,7 +293,7 @@ function createRenderPipeline(
 
   // https://gpuweb.github.io/gpuweb/#dom-gpudevice-createshadermodule
   const cellShaderModule = device.createShaderModule({
-    label: 'Cell Renderer',
+    label: 'Cell Shader',
     code: Renderer
   });
 
@@ -338,13 +337,15 @@ function createRenderPipeline(
 }
 
 function createRenderPass(
-  pipeline: GPURenderPipeline,
+  pipelines: [GPUComputePipeline, GPURenderPipeline],
   context: GPUCanvasContext,
   groups: GPUBindGroup[],
+  workgroupSize: number,
   device: GPUDevice,
   buffer: GPUBuffer,
   instances: number,
   vertices: number,
+  gridSize: number,
   step: number
 ): number {
   // https://gpuweb.github.io/gpuweb/#gpucommandencoder
@@ -352,6 +353,20 @@ function createRenderPass(
 
   // https://gpuweb.github.io/gpuweb/#dom-gpucommandencoder-begincomputepass
   const computePass = commandEncoder.beginComputePass();
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpucomputepassencoder-setpipeline
+  computePass.setPipeline(pipelines[0]);
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpubindingcommandsmixin-setbindgroup
+  computePass.setBindGroup(0, groups[step % 2]);
+
+  // Number of workgroups to dispatch, defined by:
+  // compute shader invocations per cell on one axis (32)
+  // divided by workgroup size definded in a simulation shader (8).
+  const workgroupCount = Math.ceil(gridSize / workgroupSize);
+
+  // https://gpuweb.github.io/gpuweb/#dom-gpucomputepassencoder-dispatchworkgroups
+  computePass.dispatchWorkgroups(workgroupCount, workgroupCount);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpucomputepassencoder-end
   computePass.end();
@@ -372,13 +387,13 @@ function createRenderPass(
   });
 
   // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-setpipeline
-  renderPass.setPipeline(pipeline);
+  renderPass.setPipeline(pipelines[1]);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-setvertexbuffer
   renderPass.setVertexBuffer(0, buffer);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpubindingcommandsmixin-setbindgroup
-  renderPass.setBindGroup(0, groups[step++ % 2]);
+  renderPass.setBindGroup(0, groups[++step % 2]);
 
   // https://gpuweb.github.io/gpuweb/#dom-gpurendercommandsmixin-draw
   renderPass.draw(vertices, instances);
@@ -396,27 +411,40 @@ function createRenderPass(
 }
 
 initializeWebGPU(document.getElementsByTagName('canvas')[0])
-  .then(({ context, device, format }: GPUContextDeviceFormat, size = 32, step = 0) => {
+  .then(({ context, device, format }: GPUContextDeviceFormat, size = 32) => {
     const { layout: bindGroupLayout, groups } =
-      createGridBindGroups(/* pipeline, */ device, size);
+      createGridBindGroups(/* renderPipeline, */ device, size);
 
-    const { pipeline, layout, buffer, vertices } =
+    const { pipeline: renderPipeline, layout: pipelineLayout, buffer, vertices } =
       createRenderPipeline(device, format, bindGroupLayout);
 
-    createComputePipeline(layout, device);
+    const computePipeline = createComputePipeline(pipelineLayout, device);
 
-    setInterval(() => {
+    let step = 0,
+        instances = size * size,
+        lastRender = performance.now();
+
+    const runSimulation = (time: number) => {
+      requestAnimationFrame(runSimulation);
+      if (time - lastRender < RENDER_LOOP_INTERVAL) return;
+      
       step = createRenderPass(
-        pipeline,
+        [computePipeline, renderPipeline],
         context,
         groups,
+        8,
         device,
         buffer,
-        size * size,
+        instances,
         vertices,
+        size,
         step
-      )
-    }, RENDER_LOOP_INTERVAL);
+      );
+
+      lastRender = time;
+    };
+
+    requestAnimationFrame(runSimulation);
   })
   .catch(error =>
     error.cause === WEBGPU_NOT_SUPPORTED
