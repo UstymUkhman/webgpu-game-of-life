@@ -126,17 +126,13 @@ function createGridBindGroups(
     })
   ];
 
-  // Every third cell of the first grid is marked as active.
-  for (let i = 0; i < storageArray.length; i += 3) storageArray[i] = 1;
+  // Initialize each cell with a random state.
+  for (let i = 0; i < storageArray.length; i++) {
+    storageArray[i] = +(Math.random() > 0.6);
+  }
 
   // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
   device.queue.writeBuffer(storageBuffers[0], 0, storageArray);
-
-  // Every other cell of the second grid is marked as active.
-  for (let i = 0; i < storageArray.length; i++) storageArray[i] = i % 2;
-
-  // https://gpuweb.github.io/gpuweb/#dom-gpuqueue-writebuffer
-  device.queue.writeBuffer(storageBuffers[1], 0, storageArray);
 
   // Bind group layout and pipeline layout that describes all
   // of the resources that are present in the bind group,
@@ -411,7 +407,12 @@ function createRenderPass(
 }
 
 initializeWebGPU(document.getElementsByTagName('canvas')[0])
-  .then(({ context, device, format }: GPUContextDeviceFormat, size = 32) => {
+  .then(({ context, device, format }: GPUContextDeviceFormat) => {
+    let step = 0,
+        size = 32,
+        instances = size * size,
+        lastRender = performance.now();
+
     const { layout: bindGroupLayout, groups } =
       createGridBindGroups(/* renderPipeline, */ device, size);
 
@@ -419,10 +420,6 @@ initializeWebGPU(document.getElementsByTagName('canvas')[0])
       createRenderPipeline(device, format, bindGroupLayout);
 
     const computePipeline = createComputePipeline(pipelineLayout, device);
-
-    let step = 0,
-        instances = size * size,
-        lastRender = performance.now();
 
     const runSimulation = (time: number) => {
       requestAnimationFrame(runSimulation);
