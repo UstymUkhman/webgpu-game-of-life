@@ -4,7 +4,7 @@
   "description": "Conway's Game of Life in WebGPU.",
   "packageManager": "^npm@9.8.0",
   "main": "src/main.ts",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "license": "MIT",
   "type": "module",
   "private": true,
